@@ -11,14 +11,31 @@ function App() {
 
   const handleConnect = useCallback(async () => {
     try {
-      setLoading(true)
-      setError(null)
-      await connect()
-      setIsConnected(true)
+      setLoading(true);
+      setError(null);
+      
+      // Check for ArConnect
+      if (typeof window.arweaveWallet === 'undefined') {
+        throw new Error('Please install ArConnect first');
+      }
+
+      // Request permissions
+      await window.arweaveWallet.connect([
+        'ACCESS_ADDRESS',
+        'SIGN_TRANSACTION',
+        'DISPATCH'
+      ]);
+
+      // Get address
+      const address = await window.arweaveWallet.getActiveAddress();
+      console.log('Connected address:', address);
+      
+      setIsConnected(true);
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
+      console.error('Connection error:', err);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }, [])
 
