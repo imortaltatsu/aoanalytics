@@ -202,6 +202,106 @@ const calculateCorrelation = (x, y) => {
   return numerator / denominator;
 };
 
+// Add coefficient formatting utility
+const formatCoefficient = (coef, index, xAxes) => {
+  if (index === 0) return coef.toFixed(4);
+  const sign = coef >= 0 ? '+' : '';
+  return `${sign}${coef.toFixed(4)}${xAxes[index-1]}`;
+};
+
+// Standardization helper functions
+const standardize = (X) => {
+  const means = X[0].map((_, col) => 
+    X.reduce((sum, row) => sum + row[col], 0) / X.length
+  );
+  const stds = X[0].map((col, j) => {
+    const mean = means[j];
+    return Math.sqrt(
+      X.reduce((sum, row) => sum + Math.pow(row[j] - mean, 2), 0) / X.length
+    );
+  });
+
+  return {
+    normalized: X.map(row => 
+      row.map((val, j) => (val - means[j]) / stds[j])
+    ),
+    means,
+    stds
+  };
+};
+
+// Lasso Regression Implementation
+const lassoRegression = (X, y, alpha = 0.1, learningRate = 0.01, maxIter = 1000, tolerance = 1e-4) => {
+  const m = X.length;  // number of samples
+  const n = X[0].length;  // number of features
+  
+  // Standardize features
+  const { normalized: X_norm, means: X_means, stds: X_stds } = standardize(X);
+  const y_mean = y.reduce((a, b) => a + b) / m;
+  const y_std = Math.sqrt(y.reduce((sum, val) => sum + Math.pow(val - y_mean, 2), 0) / m);
+  const y_norm = y.map(val => (val - y_mean) / y_std);
+
+  // Initialize parameters
+  let theta = new Array(n).fill(0);
+  let prevCost = Infinity;
+  
+  // Gradient descent with L1 regularization
+  for (let iter = 0; iter < maxIter; iter++) {
+    // Compute predictions
+    const predictions = X_norm.map(row => 
+      row.reduce((sum, val, j) => sum + val * theta[j], 0)
+    );
+
+    // Compute gradients with L1 regularization
+    const gradients = theta.map((t, j) => {
+      let gradient = 0;
+      for (let i = 0; i < m; i++) {
+        gradient += (predictions[i] - y_norm[i]) * X_norm[i][j];
+      }
+      gradient = gradient / m + alpha * Math.sign(t);
+      return gradient;
+    });
+
+    // Update parameters
+    theta = theta.map((t, j) => t - learningRate * gradients[j]);
+
+    // Compute cost for convergence check
+    const cost = predictions.reduce((sum, pred, i) => 
+      sum + Math.pow(pred - y_norm[i], 2), 0) / (2 * m) + 
+      alpha * theta.reduce((sum, t) => sum + Math.abs(t), 0);
+
+    // Check convergence
+    if (Math.abs(prevCost - cost) < tolerance) break;
+    prevCost = cost;
+  }
+
+  // Unstandardize coefficients
+  const coefficients = theta.map((t, j) => (t * y_std) / X_stds[j]);
+  const intercept = y_mean - X_means.reduce((sum, mean, j) => 
+    sum + mean * coefficients[j], 0
+  );
+
+  return {
+    coefficients,
+    intercept,
+    normalized: {
+      coefficients: theta,
+      X_means,
+      X_stds,
+      y_mean,
+      y_std
+    }
+  };
+};
+
+// Helper to compute R² score
+const computeR2Score = (y_true, y_pred) => {
+  const y_mean = y_true.reduce((a, b) => a + b) / y_true.length;
+  const totalSum = y_true.reduce((sum, val) => sum + Math.pow(val - y_mean, 2), 0);
+  const residualSum = y_true.reduce((sum, val, i) => sum + Math.pow(val - y_pred[i], 2), 0);
+  return 1 - (residualSum / totalSum);
+};
+
 const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
   const [model, setModel] = useState('linear')
   const [alpha, setAlpha] = useState(0.1)
@@ -209,20 +309,25 @@ const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
 
-  // Update message sending with correct parameter structure
+  // Update handleCompute
   const handleCompute = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      if (!window.arweaveWallet) {
-        throw new Error('Arweave wallet not found');
-      }
+      // Local computation for formula display
+      const X = data.map(row => xAxes.map(col => Number(row[col])));
+      const y = data.map(row => Number(row[yAxis]));
+      const { coefficients, intercept } = lassoRegression(X, y, alpha);
+      const formula = `ŷ = ${intercept.toFixed(4)} ${coefficients.map((coef, i) => 
+        formatCoefficient(coef, i+1, xAxes)).join(' ')}`;
 
-      // Format data as simple CSV structure
+      // Send to AO process
       const csvData = {
-        X: data.map(row => xAxes.map(col => Number(row[col]))),
-        y: data.map(row => Number(row[yAxis]))
+        X: X,
+        y: y,
+        model: model,
+        alpha: alpha
       };
 
       const signer = createDataItemSigner(window.arweaveWallet);
@@ -236,12 +341,18 @@ const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
       });
 
       console.log('Message sent with ID:', msgId);
-      const response = await results(msgId);
-      if (response.error) {
-        throw new Error(response.error);
-      }
+      //const response = await results(msgId);
+      
+      //if (response.error) {
+      //  throw new Error(response.error);
+      //}
 
-      setResults(response);
+      setResults({
+        //...response,
+        localFormula: formula,
+        localCoefficients: coefficients,
+        localIntercept: intercept
+      });
 
     } catch (err) {
       console.error('Computation error:', err);
@@ -301,11 +412,17 @@ const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
       </button>
 
       {results && (
-        <div className="mt-4">
-          <h4 className="text-white font-medium mb-2">Results:</h4>
-          <pre className="bg-gray-900/50 p-4 rounded-lg overflow-auto text-sm text-gray-300">
-            {JSON.stringify(results, null, 2)}
-          </pre>
+        <div className="mt-4 space-y-4">
+          <div className="bg-gray-900/50 p-4 rounded-lg">
+            <h4 className="text-white font-medium mb-2">Regression Formula:</h4>
+            <p className="font-mono text-sm text-gray-300">{results.localFormula}</p>
+          </div>
+          {/* <div className="bg-gray-900/50 p-4 rounded-lg overflow-auto">
+            <h4 className="text-white font-medium mb-2">AO Results:</h4>
+            <pre className="text-sm text-gray-300">
+              {JSON.stringify(results, null, 2)}
+            </pre>
+          </div> */}
         </div>
       )}
     </div>
