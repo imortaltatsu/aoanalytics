@@ -1,10 +1,10 @@
 // App.jsx
-import React, { useState, useCallback } from 'react'
-import { connect, message, results } from '@permaweb/aoconnect'
+import React, { useState, useCallback, useMemo } from 'react'
+import { connect, message, results ,createDataItemSigner } from '@permaweb/aoconnect'
 import Papa from 'papaparse'
 import {
   ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Bar
+  ResponsiveContainer, BarChart, Bar, ComposedChart, Legend
 } from 'recharts';
 import { mean, deviation, extent, bin } from 'd3-array';
 
@@ -204,38 +204,52 @@ const calculateCorrelation = (x, y) => {
 
 const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
   const [model, setModel] = useState('linear')
-  const [alpha, setAlpha] = useState(1.0)
+  const [alpha, setAlpha] = useState(0.1)
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
+  const [error, setError] = useState(null)
 
+  // Update message sending with correct parameter structure
   const handleCompute = async () => {
     try {
-      setLoading(true)
-      
-      // Prepare data for AO process
-      const processData = {
-        action: 'regression',
-        data: {
-          x: data.map(row => xAxes.map(col => Number(row[col]))),
-          y: data.map(row => Number(row[yAxis])),
-          model: model,
-          params: {
-            alpha: model !== 'linear' ? alpha : undefined
-          }
-        }
+      setLoading(true);
+      setError(null);
+
+      if (!window.arweaveWallet) {
+        throw new Error('Arweave wallet not found');
       }
 
-      // Send to AO process
-      const msgId = await message(process.env.AO_PROCESS_ID, processData)
-      const response = await results(msgId)
-      setResults(response)
+      // Format data as simple CSV structure
+      const csvData = {
+        X: data.map(row => xAxes.map(col => Number(row[col]))),
+        y: data.map(row => Number(row[yAxis]))
+      };
+
+      const signer = createDataItemSigner(window.arweaveWallet);
+      const msgId = await message({
+        process: "KtPCqIgtM1ijjHU4OCrgeK8PMBAR0BrU3ltaeDCUJAc",
+        data: JSON.stringify(csvData),
+        tags: [
+          { name: "model_alpha", value: `${model}_${alpha}` }
+        ],
+        signer: createDataItemSigner(window.arweaveWallet)
+      });
+
+      console.log('Message sent with ID:', msgId);
+      const response = await results(msgId);
+      if (response.error) {
+        throw new Error(response.error);
+      }
+
+      setResults(response);
 
     } catch (err) {
-      console.error('Computation error:', err)
+      console.error('Computation error:', err);
+      setError(err.message);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   return (
     <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6 mt-8">
@@ -303,12 +317,157 @@ const GraphTypes = {
   SCATTER: 'scatter',
   DISTRIBUTION: 'distribution',
   CORRELATION: 'correlation',
-  BOX: 'box'
+};
+
+// Add missing component definitions before ExploratoryAnalysis
+const DistributionChart = ({ data, column }) => {
+  const values = data.map(d => Number(d[column])).filter(n => !isNaN(n));
+  const [min, max] = extent(values);
+  const binGenerator = bin().domain([min, max]).thresholds(20);
+  const bins = binGenerator(values);
+  
+  const chartData = bins.map(bin => ({
+    value: (bin.x0 + bin.x1) / 2,
+    count: bin.length
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={chartData}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#444" />
+        <XAxis dataKey="value" stroke="#999" />
+        <YAxis stroke="#999" />
+        <Tooltip 
+          contentStyle={{ backgroundColor: '#1f2937', border: 'none' }}
+          labelStyle={{ color: '#fff' }}
+        />
+        <Bar dataKey="count" fill="#60a5fa" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+};
+
+const BoxPlot = ({ data, column }) => {
+  const values = data.map(d => Number(d[column])).filter(n => !isNaN(n));
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const median = sorted[Math.floor(sorted.length * 0.5)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const min = sorted[0];
+  const max = sorted[sorted.length - 1];
+
+  const boxData = [{
+    q1, median, q3, min, max
+  }];
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <ComposedChart data={boxData} layout="vertical">
+        <CartesianGrid strokeDasharray="3 3" stroke="#444" />
+        <XAxis type="number" />
+        <YAxis dataKey="median" type="category" />
+        <Tooltip />
+        <Bar dataKey="min" fill="#8884d8" />
+        <Bar dataKey="q1" fill="#82ca9d" />
+        <Bar dataKey="median" fill="#ffc658" />
+        <Bar dataKey="q3" fill="#82ca9d" />
+        <Bar dataKey="max" fill="#8884d8" />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+};
+
+const CorrelationHeatmap = ({ data }) => {
+  const headers = Object.keys(data[0]);
+  const correlations = [];
+
+  headers.forEach(header1 => {
+    headers.forEach(header2 => {
+      const values1 = data.map(d => Number(d[header1])).filter(n => !isNaN(n));
+      const values2 = data.map(d => Number(d[header2])).filter(n => !isNaN(n));
+
+      if (values1.length && values2.length) {
+        const xMean = mean(values1);
+        const yMean = mean(values2);
+        
+        const numerator = values1.reduce((sum, x, i) => 
+          sum + (x - xMean) * (values2[i] - yMean), 0);
+        
+        const denominator = Math.sqrt(
+          values1.reduce((sum, x) => sum + Math.pow(x - xMean, 2), 0) *
+          values2.reduce((sum, y) => sum + Math.pow(y - yMean, 2), 0)
+        );
+
+        correlations.push({
+          x: header1,
+          y: header2,
+          correlation: numerator / denominator
+        });
+      }
+    });
+  });
+
+  return (
+    <div className="h-full overflow-auto">
+      <table className="w-full text-sm text-gray-300">
+        <thead>
+          <tr>
+            <th></th>
+            {headers.map(header => (
+              <th key={header} className="px-4 py-2">{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {headers.map(row => (
+            <tr key={row}>
+              <td className="font-medium px-4 py-2">{row}</td>
+              {headers.map(col => {
+                const corr = correlations.find(
+                  d => d.x === row && d.y === col
+                )?.correlation || 0;
+                
+                return (
+                  <td 
+                    key={col}
+                    style={{
+                      backgroundColor: `rgba(96, 165, 250, ${Math.abs(corr)})`
+                    }}
+                    className="px-4 py-2 text-center"
+                  >
+                    {corr.toFixed(2)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 };
 
 // Add EDA component
 const ExploratoryAnalysis = ({ data, xAxes, yAxis }) => {
   const [selectedGraph, setSelectedGraph] = useState(GraphTypes.SCATTER);
+
+  // Prepare scatter plot data
+  const scatterData = useMemo(() => {
+    if (!data || !xAxes.length || !yAxis) return [];
+    
+    return xAxes.map(xAxis => ({
+      name: xAxis,
+      data: data
+        .map(row => ({
+          x: Number(row[xAxis]),
+          y: Number(row[yAxis])
+        }))
+        .filter(point => !isNaN(point.x) && !isNaN(point.y))
+    }));
+  }, [data, xAxes, yAxis]);
+
+  // Add this color array for consistent colors
+  const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#0088fe'];
 
   return (
     <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6 mt-6">
@@ -322,25 +481,53 @@ const ExploratoryAnalysis = ({ data, xAxes, yAxis }) => {
           <option value={GraphTypes.SCATTER}>Scatter Plot</option>
           <option value={GraphTypes.DISTRIBUTION}>Distribution Plot</option>
           <option value={GraphTypes.CORRELATION}>Correlation Heatmap</option>
-          <option value={GraphTypes.BOX}>Box Plot</option>
+
         </select>
       </div>
 
       <div className="h-[400px]">
-        {selectedGraph === GraphTypes.SCATTER && (
+        {selectedGraph === GraphTypes.SCATTER && scatterData.length > 0 && (
           <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis name={xAxes[0]} dataKey="x" type="number" />
-              <YAxis name={yAxis} dataKey="y" type="number" />
-              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-              <Scatter
-                data={data.map(d => ({
-                  x: Number(d[xAxes[0]]),
-                  y: Number(d[yAxis])
-                }))}
-                fill="#8884d8"
+            <ScatterChart 
+              margin={{ top: 20, right: 20, bottom: 40, left: 40 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#444" opacity={0.5} />
+              <XAxis 
+                type="number" 
+                dataKey="x" 
+                name="X" 
+                stroke="#999"
+                label={{ value: ' ', position: 'bottom', fill: '#999', dy: 20 }}
+                tick={{ fill: '#999' }}
+                axisLine={{ stroke: '#666' }}
               />
+              <YAxis 
+                type="number" 
+                dataKey="y" 
+                name={yAxis} 
+                stroke="#999"
+                label={{ value: yAxis, angle: -90, position: 'left', fill: '#999', dx: -20 }}
+                tick={{ fill: '#999' }}
+                axisLine={{ stroke: '#666' }}
+              />
+              <Tooltip 
+                cursor={{ strokeDasharray: '3 3' }}
+                contentStyle={{ backgroundColor: '#1f2937', border: 'none' }}
+                labelStyle={{ color: '#fff' }}
+              />
+              <Legend 
+                verticalAlign="top" 
+                height={36}
+              />
+              {scatterData.map((series, index) => (
+                <Scatter
+                  key={series.name}
+                  name={series.name}
+                  data={series.data}
+                  fill={COLORS[index % COLORS.length]}
+                  shape="circle"
+                />
+              ))}
             </ScatterChart>
           </ResponsiveContainer>
         )}
@@ -551,14 +738,15 @@ function App() {
                 />
                 <div>
               </div>
-              </div>
-            </div>
+            
             {yAxis && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-6">
                 {/*<OutlierDetection data={csvData} column={yAxis} onCleanData={setCsvData} />*/}
                 <RegressionAnalysis data={csvData} xAxes={xAxes} yAxis={yAxis} />
               </div>
             )}
+              </div>
+            </div>
             {/* Data Table */}
             <DataTable 
               data={csvData}
