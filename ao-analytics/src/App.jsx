@@ -2,42 +2,364 @@
 import React, { useState, useCallback } from 'react'
 import { connect, message, results } from '@permaweb/aoconnect'
 import Papa from 'papaparse'
+import {
+  ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, BarChart, Bar
+} from 'recharts';
+import { mean, deviation, extent, bin } from 'd3-array';
 
-const DataTable = ({ data }) => {
+const DataTable = ({ data, xAxes, yAxis, isTableExpanded, setIsTableExpanded }) => {
   if (!data || data.length === 0) return null
   
   const headers = Object.keys(data[0])
+  const displayData = isTableExpanded ? data : data.slice(0, 5)
   
   return (
-    <div className="w-full overflow-x-auto rounded-lg shadow">
-      <table className="w-full text-sm text-left text-gray-300">
-        <thead className="text-xs uppercase bg-gray-700 text-gray-300">
-          <tr>
-            {headers.map((header, index) => (
-              <th key={index} className="px-6 py-3">
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, rowIndex) => (
-            <tr 
-              key={rowIndex} 
-              className="border-b bg-gray-800 border-gray-700 hover:bg-gray-700"
-            >
-              {headers.map((header, colIndex) => (
-                <td key={colIndex} className="px-6 py-4 font-medium whitespace-nowrap">
-                  {row[header]}
-                </td>
+    <div className="w-full">
+      <div className="flex justify-between items-center mb-4">
+        <button
+          onClick={() => setIsTableExpanded(!isTableExpanded)}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 transition-colors"
+        >
+          {isTableExpanded ? (
+            <>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
+              Show Less ({data.length} total rows)
+            </>
+          ) : (
+            <>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+              </svg>
+              Show All ({data.length} rows)
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className={`transition-all duration-300 overflow-hidden ${
+        isTableExpanded ? 'max-h-[800px]' : 'max-h-[300px]'
+      }`}>
+        <div className="w-full overflow-x-auto rounded-lg shadow">
+          <table className="w-full text-sm text-left text-gray-300">
+            <thead className="text-xs uppercase bg-gray-700 text-gray-300 sticky top-0">
+              <tr>
+                {headers.map((header) => (
+                  <th 
+                    key={header} 
+                    className={`px-6 py-3 ${
+                      xAxes.includes(header)
+                        ? 'bg-blue-600' 
+                        : header === yAxis 
+                        ? 'bg-green-600' 
+                        : ''
+                    }`}
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {displayData.map((row, rowIndex) => (
+                <tr 
+                  key={rowIndex} 
+                  className="border-b bg-gray-800 border-gray-700 hover:bg-gray-700"
+                >
+                  {headers.map((header) => (
+                    <td 
+                      key={header} 
+                      className={`px-6 py-4 font-medium whitespace-nowrap ${
+                        xAxes.includes(header)
+                          ? 'text-blue-400' 
+                          : header === yAxis 
+                          ? 'text-green-400' 
+                          : ''
+                      }`}
+                    >
+                      {row[header]}
+                    </td>
+                  ))}
+                </tr>
               ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }
+
+const AnalyticsSection = ({ data, xAxes, yAxis }) => {
+  if (!data || !yAxis || xAxes.length === 0) return null;
+
+  // Calculate probability distribution
+  const yValues = data.map(d => Number(d[yAxis])).filter(n => !isNaN(n));
+  const [min, max] = extent(yValues);
+  const binGenerator = bin().domain([min, max]).thresholds(20);
+  const bins = binGenerator(yValues);
+  
+  const distributionData = bins.map(bin => ({
+    value: (bin.x0 + bin.x1) / 2,
+    count: bin.length
+  }));
+
+  // Calculate correlations
+  const correlationData = [];
+  const headers = Object.keys(data[0]);
+  
+  headers.forEach(header1 => {
+    headers.forEach(header2 => {
+      const values1 = data.map(d => Number(d[header1])).filter(n => !isNaN(n));
+      const values2 = data.map(d => Number(d[header2])).filter(n => !isNaN(n));
+      
+      if (values1.length === values2.length) {
+        const correlation = calculateCorrelation(values1, values2);
+        correlationData.push({
+          x: header1,
+          y: header2,
+          correlation: correlation
+        });
+      }
+    });
+  });
+
+  return (
+    <div className="mt-8 space-y-8">
+      <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6">
+        <h3 className="text-lg font-medium text-white mb-4">Probability Distribution</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={distributionData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="value" />
+            <YAxis />
+            <Tooltip />
+            <Bar dataKey="count" fill="#8884d8" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6">
+        <h3 className="text-lg font-medium text-white mb-4">Correlation Heatmap</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-gray-300">
+            <thead>
+              <tr>
+                <th></th>
+                {headers.map(header => (
+                  <th key={header} className="px-4 py-2">{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {headers.map(row => (
+                <tr key={row}>
+                  <td className="font-medium px-4 py-2">{row}</td>
+                  {headers.map(col => {
+                    const correlation = correlationData.find(
+                      d => d.x === row && d.y === col
+                    )?.correlation || 0;
+                    
+                    return (
+                      <td 
+                        key={col}
+                        style={{
+                          backgroundColor: `rgba(66, 153, 225, ${Math.abs(correlation)})`
+                        }}
+                        className="px-4 py-2 text-center"
+                      >
+                        {correlation.toFixed(2)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Add correlation calculation helper
+const calculateCorrelation = (x, y) => {
+  const n = x.length;
+  const xMean = mean(x);
+  const yMean = mean(y);
+  
+  const numerator = x.reduce((sum, xi, i) => {
+    return sum + (xi - xMean) * (y[i] - yMean);
+  }, 0);
+  
+  const denominator = Math.sqrt(
+    x.reduce((sum, xi) => sum + Math.pow(xi - xMean, 2), 0) *
+    y.reduce((sum, yi) => sum + Math.pow(yi - yMean, 2), 0)
+  );
+  
+  return numerator / denominator;
+};
+
+const RegressionAnalysis = ({ data, xAxes, yAxis }) => {
+  const [model, setModel] = useState('linear')
+  const [alpha, setAlpha] = useState(1.0)
+  const [loading, setLoading] = useState(false)
+  const [results, setResults] = useState(null)
+
+  const handleCompute = async () => {
+    try {
+      setLoading(true)
+      
+      // Prepare data for AO process
+      const processData = {
+        action: 'regression',
+        data: {
+          x: data.map(row => xAxes.map(col => Number(row[col]))),
+          y: data.map(row => Number(row[yAxis])),
+          model: model,
+          params: {
+            alpha: model !== 'linear' ? alpha : undefined
+          }
+        }
+      }
+
+      // Send to AO process
+      const msgId = await message(process.env.AO_PROCESS_ID, processData)
+      const response = await results(msgId)
+      setResults(response)
+
+    } catch (err) {
+      console.error('Computation error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6 mt-8">
+      <h3 className="text-lg font-medium text-white mb-4">Regression Analysis</h3>
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Regression Model
+          </label>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="w-full bg-gray-700 text-white rounded-lg px-4 py-2 border border-gray-600"
+          >
+            <option value="linear">Linear Regression</option>
+            <option value="ridge">Ridge Regression</option>
+            <option value="lasso">Lasso Regression</option>
+          </select>
+        </div>
+
+        {(model === 'ridge' || model === 'lasso') && (
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Alpha (Regularization)
+            </label>
+            <input
+              type="number"
+              value={alpha}
+              onChange={(e) => setAlpha(Number(e.target.value))}
+              min="0"
+              step="0.1"
+              className="w-full bg-gray-700 text-white rounded-lg px-4 py-2 border border-gray-600"
+            />
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={handleCompute}
+        disabled={loading || !xAxes.length || !yAxis}
+        className={`
+          px-4 py-2 rounded-lg font-medium
+          ${loading ? 'bg-gray-600' : 'bg-blue-600 hover:bg-blue-700'}
+          text-white transition-colors
+        `}
+      >
+        {loading ? 'Computing...' : 'Run Regression'}
+      </button>
+
+      {results && (
+        <div className="mt-4">
+          <h4 className="text-white font-medium mb-2">Results:</h4>
+          <pre className="bg-gray-900/50 p-4 rounded-lg overflow-auto text-sm text-gray-300">
+            {JSON.stringify(results, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Add graph type enum
+const GraphTypes = {
+  SCATTER: 'scatter',
+  DISTRIBUTION: 'distribution',
+  CORRELATION: 'correlation',
+  BOX: 'box'
+};
+
+// Add EDA component
+const ExploratoryAnalysis = ({ data, xAxes, yAxis }) => {
+  const [selectedGraph, setSelectedGraph] = useState(GraphTypes.SCATTER);
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6 mt-6">
+      <div className="flex justify-between items-center mb-6">
+        <h3 className="text-lg font-medium text-white">Exploratory Data Analysis</h3>
+        <select
+          value={selectedGraph}
+          onChange={(e) => setSelectedGraph(e.target.value)}
+          className="bg-gray-700 text-white rounded-lg px-4 py-2 text-sm border border-gray-600"
+        >
+          <option value={GraphTypes.SCATTER}>Scatter Plot</option>
+          <option value={GraphTypes.DISTRIBUTION}>Distribution Plot</option>
+          <option value={GraphTypes.CORRELATION}>Correlation Heatmap</option>
+          <option value={GraphTypes.BOX}>Box Plot</option>
+        </select>
+      </div>
+
+      <div className="h-[400px]">
+        {selectedGraph === GraphTypes.SCATTER && (
+          <ResponsiveContainer width="100%" height="100%">
+            <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis name={xAxes[0]} dataKey="x" type="number" />
+              <YAxis name={yAxis} dataKey="y" type="number" />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+              <Scatter
+                data={data.map(d => ({
+                  x: Number(d[xAxes[0]]),
+                  y: Number(d[yAxis])
+                }))}
+                fill="#8884d8"
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+        )}
+
+        {selectedGraph === GraphTypes.DISTRIBUTION && (
+          <DistributionChart data={data} column={yAxis} />
+        )}
+
+        {selectedGraph === GraphTypes.CORRELATION && (
+          <CorrelationHeatmap data={data} />
+        )}
+
+        {selectedGraph === GraphTypes.BOX && (
+          <BoxPlot data={data} column={yAxis} />
+        )}
+      </div>
+    </div>
+  );
+};
 
 function App() {
   const [isConnected, setIsConnected] = useState(false)
@@ -47,6 +369,9 @@ function App() {
   const [csvData, setCsvData] = useState(null)
   const [messageResult, setMessageResult] = useState(null)
   const [processId, setProcessId] = useState('')
+  const [xAxes, setXAxes] = useState([])
+  const [yAxis, setYAxis] = useState('')
+  const [isTableExpanded, setIsTableExpanded] = useState(false)
 
   const handleConnect = useCallback(async () => {
     try {
@@ -106,16 +431,68 @@ function App() {
     setCsvData(null);
   };
 
+  const MultiAxisSelector = ({ columns, xAxes, yAxis, setXAxes, setYAxis }) => {
+    const handleXAxisChange = (e) => {
+      const options = e.target.options;
+      const selectedValues = [];
+      for (let i = 0; i < options.length; i++) {
+        if (options[i].selected) {
+          selectedValues.push(options[i].value);
+        }
+      }
+      setXAxes(selectedValues);
+    };
+
+    return (
+      <div className="flex gap-4 mb-6">
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            X Axes (Multiple)
+          </label>
+          <select
+            multiple
+            value={xAxes}
+            onChange={handleXAxisChange}
+            className="w-full bg-gray-700 text-white rounded-lg px-4 py-2 border border-gray-600 min-h-[120px]"
+          >
+            {columns.map((column) => (
+              <option key={column} value={column}>
+                {column}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">Hold Ctrl/Cmd to select multiple</p>
+        </div>
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Y Axis
+          </label>
+          <select
+            value={yAxis}
+            onChange={(e) => setYAxis(e.target.value)}
+            className="w-full bg-gray-700 text-white rounded-lg px-4 py-2 border border-gray-600"
+          >
+            <option value="">Select column</option>
+            {columns.map((column) => (
+              <option key={column} value={column}>
+                {column}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800">
-      {/* Navigation Header */}
-      <nav className="bg-gray-800/50 backdrop-blur-sm px-4 py-3">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-white">AO Analytics</h1>
-          
-          <div className="flex items-center gap-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+      {/* Streamlined Header */}
+      <nav className="sticky top-0 z-50 bg-gray-800/80 backdrop-blur-sm border-b border-gray-700/50">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+          <h1 className="text-xl font-bold text-white">AO Analytics</h1>
+          <div className="flex items-center gap-3">
             {isConnected && (
-              <span className="text-gray-300 font-mono text-sm hidden md:block">
+              <span className="text-gray-400 font-mono text-sm px-3 py-1.5 bg-gray-800/50 rounded-lg border border-gray-700">
                 {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
               </span>
             )}
@@ -123,12 +500,13 @@ function App() {
               onClick={handleConnect}
               disabled={loading}
               className={`
-                px-4 py-2 rounded-lg font-medium text-sm
+                px-3 py-1.5 rounded-lg text-sm font-medium
+                transition-all duration-200 ease-in-out
                 ${isConnected 
-                  ? 'bg-green-600 hover:bg-green-700' 
-                  : 'bg-blue-600 hover:bg-blue-700'}
+                  ? 'bg-green-600/20 text-green-400 border border-green-500/30' 
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+                }
                 ${loading ? 'opacity-50 cursor-wait' : ''}
-                text-white transition-colors
               `}
             >
               {loading ? 'Connecting...' : isConnected ? 'Connected' : 'Connect Wallet'}
@@ -137,51 +515,70 @@ function App() {
         </div>
       </nav>
 
-      {/* File Upload Section */}
-      <div className="max-w-7xl mx-auto p-8">
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
         {error && (
-          <div className="bg-red-500/20 border border-red-500 rounded-lg p-4 text-red-200 mb-6">
+          <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-3 text-red-200 text-sm">
             {error}
           </div>
         )}
-        
-        <div className="flex flex-col items-center justify-center space-y-6">
-          {!csvData ? (
-            <div className="w-full max-w-md p-6 bg-gray-800/50 backdrop-blur-sm rounded-lg shadow-xl">
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-600 border-dashed rounded-lg cursor-pointer hover:border-gray-500">
+
+        {/* File Upload */}
+        {!csvData ? (
+          <div className="max-w-md mx-auto">
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-6 border border-gray-700/50">
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-600 border-dashed rounded-lg cursor-pointer hover:border-gray-500 transition-colors">
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <svg className="w-8 h-8 mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-8 h-8 mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                   </svg>
-                  <p className="mb-2 text-sm text-gray-400">
-                    <span className="font-semibold">Click to upload</span> or drag and drop
-                  </p>
-                  <p className="text-xs text-gray-400">CSV files only</p>
+                  <p className="mb-2 text-sm text-gray-400"><span className="font-medium">Upload CSV</span> or drag and drop</p>
                 </div>
-                <input 
-                  type="file" 
-                  className="hidden" 
-                  accept=".csv" 
-                  onChange={handleFileUpload}
-                />
+                <input type="file" className="hidden" accept=".csv" onChange={handleFileUpload} />
               </label>
             </div>
-          ) : (
-            <div className="w-full">
-              <div className="flex justify-end mb-4">
-                <button
-                  onClick={clearData}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
-                >
-                  Clear Data
-                </button>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {/* Analysis Controls */}
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-lg p-4 border border-gray-700/50">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MultiAxisSelector
+                  columns={Object.keys(csvData[0])}
+                  xAxes={xAxes}
+                  yAxis={yAxis}
+                  setXAxes={setXAxes}
+                  setYAxis={setYAxis}
+                />
+                <div>
               </div>
-              <DataTable data={csvData} />
+              </div>
             </div>
-          )}
-        </div>
-      </div>
+            {yAxis && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/*<OutlierDetection data={csvData} column={yAxis} onCleanData={setCsvData} />*/}
+                <RegressionAnalysis data={csvData} xAxes={xAxes} yAxis={yAxis} />
+              </div>
+            )}
+            {/* Data Table */}
+            <DataTable 
+              data={csvData}
+              xAxes={xAxes}
+              yAxis={yAxis}
+              isTableExpanded={isTableExpanded}
+              setIsTableExpanded={setIsTableExpanded}
+            />
 
+            {/* EDA Section */}
+            {yAxis && xAxes.length > 0 && (
+              <ExploratoryAnalysis
+                data={csvData}
+                xAxes={xAxes}
+                yAxis={yAxis}
+              />
+            )}
+          </div>
+        )}
+      </main>
     </div>
   )
 }
